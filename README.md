@@ -8,24 +8,65 @@ ospool:
 In this lesson, we'll learn how to troubleshoot jobs that never start or fail in unexpected ways. 
 
 # Troubleshooting techniques
+We will look into 4 criterias. The criteria's are listed below
 
-## Diagnostics with condor_q
+ - [Job is held](#job-is-held)
+ - [Job completed but was unsuccessful](#job-completed-but-was-unsuccessful)
+ - [Job does not start](#Job-does-not-start)
+ - [Job is running longer than expected](#job-is-running-longer-than-expected)
 
-The `condor_q` command shows the status of the jobs and it can be used 
-to diagnose why jobs are not running. Using the `-better-analyze` flag 
-with `condor_q` can show you detailed information about why a job isn't 
-starting on a specific pool. Since OSG Connect sends jobs to many places, we also need to 
-specify a pool name with the `-pool` flag.                              
+## Job is held
+HTCondor puts your jobs on hold when something goes wrong in the process of managing your jobs. HTCondor provides a ``Hold Reason`` that explains what went wrong. To see what went wrong you can use the command `condor_q -hold`. A typical hold message may look like the following
 
-Unless you know a specific pool you would like to query, checking the `flock.opensciencegrid.org` pool is usually a good place to start.
+	$ condor_q -hold
+	ap40.uw.osg-htc.org : <128.105.68.62:9618?... @ 08/01/24 15:01:50
+ 	ID         OWNER          HELD_SINCE  HOLD_REASON
+	130.0       alice           8/1  14:56 Transfer input files failure at ⋯
 
-	$ condor_q -better-analyze JOB-ID -pool POOL-NAME
+In this particular case, a user had this in his or her HTCondor submit file:
+
+	transfer_output_files = outputfile
+
+However, when the job executed, it went into Held state. To see more about the error message `condor_q -hold JOB-ID` can be used. An example error message in this scenario is shown below:
+
+	$ condor_q -hold JOB-ID
+
+	Transfer output files failure at access point… while receiving files from the execution point. Details: Error from ….execute point … failed to send file(s) at apxx; failed to read from file /path: (errno 2) No such file or directory
+
+The reason why the file transfer failed is because `outputfile` was never created on the worker node. Remember that at the beginning we said that the user specifically requested `transfer_outputfiles = outputfile`! HTCondor could not complete this request, and so the job went into Held state instead of finishing normally.
+
+It's quite possible that the error was simply transient, and if we retry, the job will succeed. We can re-queue a job that is in Held state by using `condor_release`: 
+
+	condor_release JOB-ID 
+## Job completed but was unsuccessful
+Under this case two things will be considered. First, your job has run but the code did not execute correctly or in the expected manner. Second, your job ran but it did not produce/transferred the desired output files.
+
+For these secnarios having various `ls` or `echo` statemets that shows the contents of the directory and code's progression is helpful in diagnosing the actual issue. An example is shown here:
+
+	echo "Here are the files at the start of the job:"
+	ls -R
+	echo "Executing main command..."
+	my_command	#Part of the original code
+	echo "... finished. Here are the files at the end of the job:"
+	ls -R
+
+For your commands if eanbling debugging or verbose logging is an option then do those. Moreover, [condor_chirp](https://www.google.com/url?q=https://htcondor.readthedocs.io/en/latest/man-pages/condor_chirp.html&sa=D&source=editors&ust=1740162417565289&usg=AOvVaw1HJ8p454psoN6alPpujatn) can be a very useful tool in this regard as it sends information directly back to the Access Point. For example, the following will add a statement to your .log file:
+	command1
+	condor_chirp ulog "Finished executing command1"
+	command2
+## Job does not start
+
+Matchmaking cycle can take more than 5 minutes to complete and it can be longer if the server is busy. Specially, the more/more-specific resources are requested, the longer is the wait. For example if you are submitting a lot of GPU jobs, there may not be enough `GPUs` in the pool. This type of issues can be diagnosed using the `-better-analyze` flag 
+with `condor_q` to see the detailed information about why a job isn't 
+starting.                          
+
+	$ condor_q -better-analyze JOB-ID 
 
 Let's do an example. First we'll need to login as usual, and then load the tutorial *error101*.
 
-	$ ssh username@login.osgconnect.net
+	$ ssh username@apxx...
 	
-	$ tutorial error101
+	$ git clone https://github.com/OSGConnect/tutorial-error101.git
 	$ cd tutorial-error101
 	$ condor_submit error101_job.submit 
 
@@ -34,10 +75,9 @@ We'll check the job status the normal way:
 	condor_q username
 
 For some reason, our job is still idle. Why? Try using `condor_q
--better-analyze` to find out. Remember that you will also need to
-specify a pool name. In this case we'll use `flock.opensciencegrid.org`:
+-better-analyze` to find out. 
 
-	$ condor_q -better-analyze JOB-ID -pool flock.opensciencegrid.org
+	$ condor_q -better-analyze JOB-ID 
 	 
 	# Produces a long ouput. 
 	# The following lines are part of the output regarding the job requirements.  
@@ -53,7 +93,7 @@ specify a pool name. In this case we'll use `flock.opensciencegrid.org`:
 	[5]           0  TARGET.Memory >= RequestMemory
 	[8]       10674  TARGET.HasFileTransfer
 
-By looking through the match conditions, we see that many nodes match our requests for the Linux operating system and the x86_64 architecture, but none of them match our requirement for 51200 MB of memory. 
+By looking through the match conditions, we see that many nodes match our requests for the Linux operating system and the x86_64 architecture, but none of them match our requirement for memory. 
 
 Let's look at our submit script and see if we can find the source of this error:
 
@@ -87,39 +127,26 @@ Alternatively, you can edit the resource requirements of the idle job in queue:
 
 	condor_qedit JOB_ID RequestMemory 2048
 
+## Job is running longer than expected
 
-## Held jobs and condor_release
-
-Occasionally, a job can fail in various ways and go into "Held"
-state. Held state means that the job has encountered some error, and
-cannot run. This doesn't necessarily mean that your job has failed, but,
-for whatever reason, Condor cannot fulfill your request(s).
-
-In this particular case, a user had this in his or her Condor submit file:
-
-	transfer_output_files = outputfile
-
-However, when the job executed, it went into Held state:
-
-	$ condor_q -analyze 372993.0
-	-- Submitter: login01.osgconnect.net : <192.170.227.195:56174> : login01.osgconnect.net
-	---
-	372993.000:  Request is held.
-	Hold reason: Error from glidein_9371@compute-6-28.tier2: STARTER at 10.3.11.39 failed to send file(s) to <192.170.227.195:40485>: error reading from /wntmp/condor/compute-6-28/execute/dir_9368/glide_J6I1HT/execute/dir_16393/outputfile: (errno 2) No such file or directory; SHADOW failed to receive file(s) from <192.84.86.100:50805>
-
-Let's break down this error message piece by piece:
-
-	Hold reason: Error from glidein_9371@compute-6-28.tier2: STARTER at 10.3.11.39 failed to send file(s) to <192.170.227.195:40485>
-
-This part is quite cryptic, but it simply means that the worker node
-where your job executed (glidein_9371@compute-6-28.tier2 or 10.3.11.39)
-tried to transfer a file to the OSG Connect login node (192.170.227.195)
-but did not succeed. The next part explains why:
-
-	error reading from /wntmp/condor/compute-6-28/execute/dir_9368/glide_J6I1HT/execute/dir_16393/outputfile: (errno 2) No such file or directory
-
-This bit has the full path of the file that Condor tried to transfer back to `login.osgconnect.net`. The reason why the file transfer failed is because `outputfile` was never created on the worker node. Remember that at the beginning we said that the user specifically requested `transfer_outputfiles = outputfile`! Condor could not complete this request, and so the job went into Held state instead of finishing normally.
-
-It's quite possible that the error was simply transient, and if we retry, the job will succeed. We can re-queue a job that is in Held state by using `condor_release`: 
-
-	condor_release JOB-ID 
+To troubleshoot this issue we recommend checking your .log files and see if 
+<ul>
+<li>The job has been continuously running on the same slot</li>
+<ul>
+Debugging tools: 
+<li>[condor_tail](https://htcondor.readthedocs.io/en/latest/man-pages/condor_tail.html)</li>- It returns the last X bytes of the job
+<li>[condor_ssh_to_job](https://htcondor.readthedocs.io/en/latest/man-pages/condor_ssh_to_job.html). It allows to log in to the execution point. Point to be noted-It **does not work** on all systems. 
+</ul>
+<li>The job has been interrupted and restarted on another slot</li>
+<ul>
+Debugging tips:
+<li>If it happens once or twice, adjust your expectation of the runtime.</li>
+<li>If it happens many times, your job runtime may be too long for the system or [contact the support team](maito:support@osg-htc.org) expectation of the runtime.</li>
+</ul> 
+<li>The job is stuck on the file transfer step</li>
+<ul>
+Debugging tips:
+<li>Check the `.log` file for meaning errors</li>
+<li> Can happen if you or someone else is transferring a lot of data (large size or many files) and the `Access Point` is overwhelmed</li>
+</ul>
+</ul>
